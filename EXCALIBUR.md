@@ -64,8 +64,66 @@ Persisted in two layers (fish universal vars + `~/.bashrc` exports) so both inte
 ## Memory backend reachability
 
 - nexus (CT 105) at `192.168.1.105`
-- LAN-only: `200 OK` on `/api/health`, `/api/search`, `/api/memories`, `/api/memories?limit=N`, `/api/search/by-tag`
+- LAN-only: `200 OK` on `/api/health`, `/api/search`, `/api/memories`, `/api/memories?page_size=N`, `/api/search/by-tag`
+- MCP streamable-http on `192.168.1.105:8888/mcp`
 - Public: <https://memory.i.catdev.io> (NPM proxy → CT 105:8000) for the dashboard
+
+### Deployment topology (single-writer, post 2026-05-02)
+
+For months we ran two containers (`mcp-dashboard` :8000 and `mcp-memory` :8888) each with its own python process holding write connections to the same SQLite file. SQLite is single-writer; this caused frequent `database is locked` errors and silent write failures.
+
+The fix uses mcp-memory-service's built-in coordinator: when the second instance detects another HTTP server on `localhost:8000`, it flips its storage to `HTTPClientStorage` and proxies all writes through the first instance. To make `localhost` resolve correctly across containers, both must share a network namespace.
+
+```
+nexus (CT 105)
+├── mcp-dashboard          ← owns the network namespace
+│   image: doobidoo/mcp-memory-service:10
+│   ports: 8000:8000, 8888:8888       (both ports exposed here)
+│   env:   MCP_MODE=http
+│   role:  ONLY writer to /opt/mcp-memory/data/memories.db
+│
+└── mcp-memory             ← --network=container:mcp-dashboard
+    image: doobidoo/mcp-memory-service:10
+    ports: (none — uses dashboard's namespace)
+    env:   MCP_MODE=streamable-http
+    role:  serves MCP on :8888; coordinator detects dashboard on
+           localhost:8000 → all writes proxy through it
+```
+
+To recreate from scratch (volumes preserved across `nerdctl rm`):
+
+```bash
+sudo nerdctl stop mcp-memory && sudo nerdctl rm mcp-memory
+sudo nerdctl stop mcp-dashboard && sudo nerdctl rm mcp-dashboard
+
+sudo nerdctl run -d --name mcp-dashboard --restart=always \
+  -p 8000:8000 -p 8888:8888 \
+  -v /opt/mcp-memory/data:/app/sqlite_db \
+  -v mcp-memory_mcp-dashboard-backups:/app/backups \
+  -e MCP_MEMORY_STORAGE_BACKEND=sqlite_vec \
+  -e MCP_MEMORY_SQLITE_PATH=/app/sqlite_db/memories.db \
+  -e MCP_MEMORY_BACKUPS_PATH=/app/backups \
+  -e MCP_MEMORY_USE_ONNX=1 \
+  -e MCP_MODE=http -e MCP_HTTP_HOST=0.0.0.0 -e MCP_HTTP_PORT=8000 \
+  -e MCP_ALLOW_ANONYMOUS_ACCESS=true \
+  docker.io/doobidoo/mcp-memory-service:10
+
+sudo nerdctl run -d --name mcp-memory --restart=always \
+  --network=container:mcp-dashboard \
+  -v /opt/mcp-memory/data:/app/sqlite_db \
+  -v mcp-memory_mcp-memory-backups:/app/backups \
+  -e MCP_MEMORY_STORAGE_BACKEND=sqlite_vec \
+  -e MCP_MEMORY_SQLITE_PATH=/app/sqlite_db/memories.db \
+  -e MCP_MEMORY_BACKUPS_PATH=/app/backups \
+  -e MCP_MEMORY_USE_ONNX=1 \
+  -e MCP_MODE=streamable-http -e MCP_SSE_HOST=0.0.0.0 -e MCP_SSE_PORT=8888 \
+  -e MCP_ALLOW_ANONYMOUS_ACCESS=true \
+  docker.io/doobidoo/mcp-memory-service:10
+```
+
+If you ever see `database is locked` again, first sanity-check that `mcp-memory` is still attached to the dashboard's namespace (`sudo nerdctl inspect mcp-memory | grep NetworkMode` should show `container:mcp-dashboard`). If it's not, the lock contention is back and the recreate above is the fix.
+
+A sqlite snapshot lives at `/opt/mcp-memory/manual-backups/pre-redeploy-*` from the cutover; daily backups are written by mcp-memory-service to the `mcp-memory_mcp-dashboard-backups` volume.
 
 ## Built-in skills available to Pi
 
