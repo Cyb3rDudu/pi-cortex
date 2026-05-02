@@ -28,9 +28,19 @@ Cloned source-of-truth and symlinks into Pi's user-extensions dir:
 ~/src/pi-cortex/                       ← git clone of Cyb3rDudu/pi-cortex
 ~/.pi/agent/extensions/pi-memory      → ~/src/pi-cortex/pi-memory
 ~/.pi/agent/extensions/pi-bbcontext   → ~/src/pi-cortex/pi-bbcontext
+~/.pi/agent/extensions/pi-recap       → ~/src/pi-cortex/pi-recap
 ```
 
 Pi auto-discovers any `package.json` under `~/.pi/agent/extensions/*/` that has `"pi": { "extensions": ["./index.ts"] }`.
+
+To create the symlinks the first time (or after adding a new extension):
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+ln -sfn ~/src/pi-cortex/pi-memory     ~/.pi/agent/extensions/pi-memory
+ln -sfn ~/src/pi-cortex/pi-bbcontext  ~/.pi/agent/extensions/pi-bbcontext
+ln -sfn ~/src/pi-cortex/pi-recap      ~/.pi/agent/extensions/pi-recap
+```
 
 ## Env vars set on excalibur
 
@@ -40,11 +50,14 @@ Persisted in two layers (fish universal vars + `~/.bashrc` exports) so both inte
 |---|---|---|
 | `PI_OFFLINE` | `1` | Suppress all Pi startup network calls (telemetry, update checks) |
 | `PI_MEMORY_ENDPOINT` | `http://192.168.1.105:8000` | nexus mcp-memory-service REST URL |
-| `PI_BBCONTEXT_TAGS` | `bugbounty,decision,finding` | (legacy v0.1) tag bias for auto-injection |
-| `PI_BBCONTEXT_MAX` | `8` | (legacy v0.1) max memories injected |
+| `PI_BBCONTEXT_MAX` | `8` | Total memory budget per system-prompt injection |
+| `PI_BBCONTEXT_INCLUDE_GLOBAL` | unset (set to `1` to enable) | Pull `proj:none` cross-cutting memories alongside the project bucket |
+| `PI_RECAP_MIN_MESSAGES` | unset (defaults to `4`) | Minimum branch messages before `pi-recap` writes anything |
 | `ZAI_API_KEY` | (set) | Z.AI coding plan API key |
 
-> When the v0.2 tag schema (`type:`, `proj:`, etc.) lands, `PI_BBCONTEXT_TAGS` semantics will change — see `CLAUDE.md` for the canonical taxonomy.
+> **Legacy `PI_BBCONTEXT_TAGS=bugbounty,decision,finding` was removed during the v0.2 cutover.** The new schema (`proj:`, `type:`, etc., per `CLAUDE.md`) does the heavy lifting; reintroduce `PI_BBCONTEXT_TAGS` only if you want to additionally narrow the injected bucket (e.g. to `type:finding,type:decision`).
+>
+> **Legacy memories were not back-filled.** Memories tagged with the old flat scheme remain searchable via `memory_search` / `memory_search_by_tag` but will not auto-inject under v0.2 because they lack a `proj:<key>` tag. Rewrite them by hand if and when you want them to surface again.
 
 ## Memory backend reachability
 
@@ -88,8 +101,8 @@ You should see `read, bash, edit, write, memory_search, memory_search_by_tag, me
 | Component | Version | Status |
 |---|---|---|
 | pi-memory | 0.1.0 | ✅ working — four memory_* tools register and respond |
-| pi-bbcontext | 0.1.0 | ⚠️ injects only when query matches; tag schema is the legacy flat list (`bugbounty,decision,finding`), not the namespaced `proj:`/`type:` system from `CLAUDE.md` |
-| pi-recap | — | not built |
+| pi-bbcontext | 0.2.0 | ✅ project-aware bucket-and-rank; injects from `proj:<key>` (and `proj:none` when `PI_BBCONTEXT_INCLUDE_GLOBAL=1`); falls back to semantic only when tag buckets return zero |
+| pi-recap | 0.1.0 | ✅ writes a `type:session-recap` to nexus on `session_before_compact` and `session_shutdown`, chained via `parent_id` to the previous recap for the project |
 
 ## Other tools on excalibur (out of scope here)
 
