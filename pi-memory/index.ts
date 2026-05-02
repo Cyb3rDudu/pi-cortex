@@ -19,11 +19,173 @@
  * License: MIT
  */
 
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 
 const ENDPOINT = (process.env.PI_MEMORY_ENDPOINT ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const API_KEY = process.env.PI_MEMORY_API_KEY ?? "";
+const PROJECT_ROOTS = parsePathList(process.env.PI_CORTEX_PROJECT_ROOTS);
+const TOPIC_ROOTS = parseTopicRoots(process.env.PI_CORTEX_TOPIC_ROOTS);
+
+const PROJECT_MARKERS = [
+	"package.json",
+	"go.mod",
+	"pyproject.toml",
+	"Cargo.toml",
+	"composer.json",
+	"Gemfile",
+	".git",
+];
+
+// Canonical type values from CLAUDE.md. Used to teach the model and to keep
+// the agent honest when it picks a memory_type.
+const VALID_TYPES = [
+	"scope",
+	"recon",
+	"enum",
+	"finding",
+	"negative",
+	"decision",
+	"session-recap",
+	"reference",
+	"user",
+	"feedback",
+	"research",
+	"reading",
+	"idea",
+	"question",
+	"note",
+] as const;
+
+function expandHome(p: string): string {
+	if (p === "~") return os.homedir();
+	if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+	return p;
+}
+
+function parsePathList(raw: string | undefined): string[] {
+	if (!raw) return [];
+	return raw
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean)
+		.map((p) => path.resolve(expandHome(p)));
+}
+
+interface TopicRoot {
+	root: string;
+	topic: string;
+}
+
+function parseTopicRoots(raw: string | undefined): TopicRoot[] {
+	if (!raw) return [];
+	const out: TopicRoot[] = [];
+	for (const piece of raw.split(",")) {
+		const trimmed = piece.trim();
+		if (!trimmed) continue;
+		const eq = trimmed.indexOf("=");
+		if (eq <= 0 || eq === trimmed.length - 1) continue;
+		const root = path.resolve(expandHome(trimmed.slice(0, eq).trim()));
+		const topic = trimmed.slice(eq + 1).trim();
+		if (root && topic) out.push({ root, topic });
+	}
+	return out;
+}
+
+function isUnderRoot(cwd: string, root: string): boolean {
+	if (cwd === root) return false;
+	const rel = path.relative(root, cwd);
+	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function safeGitRemote(cwd: string): string | null {
+	try {
+		const out = execFileSync("git", ["-C", cwd, "remote", "get-url", "origin"], {
+			stdio: ["ignore", "pipe", "ignore"],
+			encoding: "utf8",
+			timeout: 1500,
+		}).trim();
+		return out || null;
+	} catch {
+		return null;
+	}
+}
+
+function parseRemote(url: string): string | null {
+	const stripped = url.replace(/\.git$/, "");
+	const ssh = stripped.match(/^[a-z]+@([^:]+):(.+)$/i);
+	if (ssh) return `${ssh[1]}/${ssh[2]}`;
+	try {
+		const u = new URL(stripped);
+		const p = u.pathname.replace(/^\/+/, "");
+		return `${u.host}/${p}`;
+	} catch {
+		return null;
+	}
+}
+
+function deriveProjectKey(cwd: string): string | null {
+	const remote = safeGitRemote(cwd);
+	if (remote) {
+		const parsed = parseRemote(remote);
+		if (parsed) return `proj:${parsed}`;
+	}
+	for (const marker of PROJECT_MARKERS) {
+		if (fs.existsSync(path.join(cwd, marker))) {
+			return `proj:${path.basename(cwd)}`;
+		}
+	}
+	const sorted = [...PROJECT_ROOTS].sort((a, b) => b.length - a.length);
+	for (const root of sorted) {
+		if (!isUnderRoot(cwd, root)) continue;
+		const rel = path.relative(root, cwd);
+		const first = rel.split(path.sep)[0];
+		if (first) return `proj:${first}`;
+	}
+	return null;
+}
+
+function deriveTopicTags(cwd: string): string[] {
+	const tags = new Set<string>();
+	for (const { root, topic } of TOPIC_ROOTS) {
+		if (isUnderRoot(cwd, root)) tags.add(`topic:${topic}`);
+	}
+	return [...tags];
+}
+
+// Enforce v0.2 schema on every write: always inject proj:<key> (when
+// derivable), topic:<x> per PI_CORTEX_TOPIC_ROOTS, source:agent, and
+// date:YYYY-MM-DD. If the agent passes a `memory_type` that matches a
+// canonical type, also inject `type:<value>`. Dedupe so we never write a
+// duplicate tag if the agent already supplied one of these.
+function enrichTags(rawTags: string[], memoryType: string | undefined): string[] {
+	const tags = new Set(rawTags);
+	const cwd = process.cwd();
+
+	const proj = deriveProjectKey(cwd);
+	if (proj && !rawTags.some((t) => t.startsWith("proj:"))) {
+		tags.add(proj);
+	}
+	for (const t of deriveTopicTags(cwd)) {
+		tags.add(t);
+	}
+	if (!rawTags.some((t) => t.startsWith("source:"))) {
+		tags.add("source:agent");
+	}
+	if (!rawTags.some((t) => t.startsWith("date:"))) {
+		tags.add(`date:${new Date().toISOString().slice(0, 10)}`);
+	}
+	if (memoryType && (VALID_TYPES as readonly string[]).includes(memoryType)) {
+		if (!rawTags.some((t) => t.startsWith("type:"))) {
+			tags.add(`type:${memoryType}`);
+		}
+	}
+	return [...tags];
+}
 
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
 	const headers: Record<string, string> = { ...extra };
@@ -110,11 +272,13 @@ const RecentParams = Type.Object({
 const StoreParams = Type.Object({
 	content: Type.String({ description: "The memory content. Keep it concise (~300 chars or less)." }),
 	tags: Type.Array(Type.String(), {
-		description: "Tags for retrieval. Always include at least one identifying tag (e.g. project, domain).",
+		description:
+			"Optional dimensional tags following the v0.2 schema: host:<x>, vuln:<x>, tech:<x>, severity:<critical|high|medium|low|info>, status:<open|fixed|dup|deprecated>, cve:<id>. Do NOT write proj:, topic:, source:, or date: by hand — those are auto-attached.",
 	}),
-	memory_type: Type.Optional(
-		Type.String({ description: "Optional category like 'note', 'finding', 'decision', 'observation'.", default: "note" }),
-	),
+	memory_type: Type.String({
+		description:
+			"REQUIRED. The kind of memory. One of: scope, recon, enum, finding, negative, decision, session-recap, reference, user, feedback, research, reading, idea, question, note. This drives the auto-attached type:<value> tag.",
+	}),
 });
 
 export default function piMemoryExtension(pi: ExtensionAPI) {
@@ -199,23 +363,33 @@ export default function piMemoryExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "memory_store",
 		label: "Store Memory",
-		description: "Write a new memory to the long-term store with tags for later retrieval.",
-		promptSnippet: "Persist a fact, decision, finding, or summary that future sessions should remember.",
+		description:
+			"Write a new memory to the long-term store under the v0.2 tag schema. The tool AUTO-ATTACHES proj:<key> (derived from cwd via git remote / project marker / PI_CORTEX_PROJECT_ROOTS), topic:<x> (per PI_CORTEX_TOPIC_ROOTS), source:agent, date:YYYY-MM-DD, and type:<memory_type>. Do not duplicate those by hand.",
+		promptSnippet:
+			"Persist a fact, decision, finding, or summary so future sessions (Pi or other clients) can recall it.",
 		promptGuidelines: [
-			"Always include at least one identifying tag (project name, domain, ticket ID, etc).",
-			"Keep content concise — split large notes into multiple linked memories instead of one giant blob.",
-			"Use memory_type to categorize: 'note' (default), 'finding', 'decision', 'observation', 'summary'.",
+			"Always pass `memory_type` — it drives the canonical type:<value> tag. Pick from: scope, recon, enum, finding, negative, decision, session-recap, reference, user, feedback, research, reading, idea, question, note.",
+			"In `tags`, only add OPTIONAL DIMENSIONAL tags: host:<domain>, vuln:<class>, tech:<stack>, severity:<level>, status:<state>, cve:<id>. Skip them when not applicable — empty array is fine.",
+			"Do NOT write proj:, topic:, source:, or date: tags by hand. The tool auto-attaches them based on cwd and current time.",
+			"Keep content concise (~300 chars). Split large notes into multiple linked memories rather than one giant blob.",
+			"If you find yourself wanting `bugbounty` or `decision` as a bare tag, that's a sign you should use memory_type=decision and rely on the auto-attached topic:bug-bounty (set via PI_CORTEX_TOPIC_ROOTS for bug-bounty cwds).",
 		],
 		parameters: StoreParams,
 		async execute(_id, { content, tags, memory_type }) {
+			const enrichedTags = enrichTags(tags ?? [], memory_type);
 			const data = await call<{ content_hash?: string; success?: boolean }>("/api/memories", {
 				method: "POST",
-				body: { content, tags, memory_type: memory_type ?? "note" },
+				body: { content, tags: enrichedTags, memory_type },
 			});
 			const hash = data.content_hash ?? "";
 			return {
-				content: [{ type: "text", text: `Stored memory${hash ? ` (${hash.slice(0, 8)})` : ""}.` }],
-				details: { tags, memory_type: memory_type ?? "note", hash },
+				content: [
+					{
+						type: "text",
+						text: `Stored memory${hash ? ` (${hash.slice(0, 8)})` : ""} with tags: ${enrichedTags.join(", ")}`,
+					},
+				],
+				details: { tags: enrichedTags, memory_type, hash },
 			};
 		},
 	});
