@@ -1,0 +1,26 @@
+{
+  "name": "pi-extension-recap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension that auto-summarizes the current session at session_before_compact and session_shutdown, then writes the recap back to mcp-memory-service with type:session-recap and a parent_id chain.",
+  "license": "MIT",
+  "author": "Cyb3rDudu",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-extension",
+    "pi-coding-agent",
+    "mcp-memory-service",
+    "memory",
+    "recap",
+    "summarization"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cyb3rDudu/pi-cortex.git"
+  }
+}
