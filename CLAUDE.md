@@ -38,6 +38,7 @@ Long-term memory is a property of the *user*, not of the LLM. Every coding sessi
 - **pi-memory** — registers four tools (`memory_search`, `memory_search_by_tag`, `memory_recent`, `memory_store`) the agent calls on demand.
 - **pi-bbcontext** — auto-fetches relevant memories at startup and injects them into the system prompt on every `before_agent_start` event. No tool calls required by the agent.
 - **pi-recap** — auto-summarizes the current session at `session_before_compact` (save state before context loss) and `session_shutdown` (final snapshot at process exit), then writes the summary back to `mcp-memory-service` with `type:session-recap` and a `parent_id` chain to the previous recap.
+- **pi-narrate** — appends a tiny "Working style" block to the system prompt on every turn so the agent narrates its work in short user-visible updates between actions instead of running silent tool-call streams. Disable with `PI_NARRATE_DISABLE=1`; extend with `PI_NARRATE_EXTRA=<sentence>`.
 - **future extensions** live as siblings under the repo root.
 
 ## Repo layout
@@ -54,7 +55,10 @@ pi-cortex/
 ├── pi-bbcontext/
 │   ├── package.json
 │   └── index.ts
-└── pi-recap/
+├── pi-recap/
+│   ├── package.json
+│   └── index.ts
+└── pi-narrate/
     ├── package.json
     └── index.ts
 ```
@@ -238,6 +242,8 @@ Behaviour when no key can be derived:
 | `PI_RECAP_MIN_MESSAGES` | recap | `4` | Minimum number of message entries in the current branch before a recap is generated (skips empty/trivial sessions) |
 | `PI_RECAP_MAX_CHARS` | recap | `24000` | Maximum chars of transcript to send to the summarizer (older turns are dropped first) |
 | `PI_RECAP_MODEL` | recap | — | Optional `provider/model-id` to use for summarization. If unset, uses the session's currently-selected model |
+| `PI_NARRATE_DISABLE` | narrate | — | Any non-empty value disables the narration-style system-prompt injection |
+| `PI_NARRATE_EXTRA` | narrate | — | Optional extra sentence(s) appended after the built-in narration block (project-specific tone, hard rules, etc.) |
 
 ## Code style
 

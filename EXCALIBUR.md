@@ -29,6 +29,7 @@ Cloned source-of-truth and symlinks into Pi's user-extensions dir:
 ~/.pi/agent/extensions/pi-memory      → ~/src/pi-cortex/pi-memory
 ~/.pi/agent/extensions/pi-bbcontext   → ~/src/pi-cortex/pi-bbcontext
 ~/.pi/agent/extensions/pi-recap       → ~/src/pi-cortex/pi-recap
+~/.pi/agent/extensions/pi-narrate     → ~/src/pi-cortex/pi-narrate
 ```
 
 Pi auto-discovers any `package.json` under `~/.pi/agent/extensions/*/` that has `"pi": { "extensions": ["./index.ts"] }`.
@@ -40,6 +41,7 @@ mkdir -p ~/.pi/agent/extensions
 ln -sfn ~/src/pi-cortex/pi-memory     ~/.pi/agent/extensions/pi-memory
 ln -sfn ~/src/pi-cortex/pi-bbcontext  ~/.pi/agent/extensions/pi-bbcontext
 ln -sfn ~/src/pi-cortex/pi-recap      ~/.pi/agent/extensions/pi-recap
+ln -sfn ~/src/pi-cortex/pi-narrate    ~/.pi/agent/extensions/pi-narrate
 ```
 
 ## Env vars set on excalibur
@@ -210,6 +212,7 @@ You should see `read, bash, edit, write, memory_search, memory_search_by_tag, me
 | pi-memory | 0.1.0 | ✅ working — four memory_* tools register and respond |
 | pi-bbcontext | 0.2.0 | ✅ project-aware bucket-and-rank; injects from `proj:<key>` (and `proj:none` when `PI_BBCONTEXT_INCLUDE_GLOBAL=1`); falls back to semantic only when tag buckets return zero |
 | pi-recap | 0.1.0 | ✅ writes a `type:session-recap` to nexus on `session_before_compact` and `session_shutdown`, chained via `parent_id` to the previous recap for the project |
+| pi-narrate | 0.1.0 | ✅ appends a "Working style" block to every system prompt so the agent narrates between actions instead of dumping silent tool-call streams |
 
 ## Other tools on excalibur (out of scope here)
 

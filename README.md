@@ -29,6 +29,10 @@ Use this when you want zero-touch memory recall — the agent always sees the re
 
 Writes a `type:session-recap` memory at `session_before_compact` (save state before context loss) and at `session_shutdown` (final snapshot at process exit). Each recap is chained to the previous one for the same project via `parent_id`, so the next session — Pi or any other client — can replay where you left off. Summaries are produced with the session's currently-selected model (or `PI_RECAP_MODEL`); the memory is tagged `proj:<key>`, `type:session-recap`, `source:pi-recap`, `date:YYYY-MM-DD`. Inspect or trigger manually via `/recap [status|now]`.
 
+### `pi-narrate` — keep the agent talking
+
+Appends a small "Working style" block to every system prompt so the agent gives short user-visible updates between actions instead of running silent tool-call streams (5 curls in a row, then 4 `memory_store` calls back-to-back, then "Now let me continue…"). Each tool call should be preceded by one or two sentences saying what was just learned and what's next; each `memory_store` should be preceded by a one-line "why". Disable with `PI_NARRATE_DISABLE=1`; extend with `PI_NARRATE_EXTRA=<sentence>` for project-specific tone.
+
 ## Configuration
 
 All three extensions read environment variables:
@@ -48,6 +52,8 @@ All three extensions read environment variables:
 | `PI_RECAP_MIN_MESSAGES` | recap | `4` | Minimum branch messages before a recap is generated |
 | `PI_RECAP_MAX_CHARS` | recap | `24000` | Max chars of transcript fed to the summarizer (older turns dropped first) |
 | `PI_RECAP_MODEL` | recap | — | Optional `provider/model-id` override for summarization |
+| `PI_NARRATE_DISABLE` | narrate | — | Set to any non-empty value to skip the narration-style system-prompt injection |
+| `PI_NARRATE_EXTRA` | narrate | — | Optional extra sentence(s) appended after the built-in narration block |
 
 ## Install
 
@@ -61,6 +67,7 @@ mkdir -p ~/.pi/agent/extensions
 ln -sfn ~/src/pi-cortex/pi-memory     ~/.pi/agent/extensions/pi-memory
 ln -sfn ~/src/pi-cortex/pi-bbcontext  ~/.pi/agent/extensions/pi-bbcontext
 ln -sfn ~/src/pi-cortex/pi-recap      ~/.pi/agent/extensions/pi-recap
+ln -sfn ~/src/pi-cortex/pi-narrate    ~/.pi/agent/extensions/pi-narrate
 ```
 
 Then export the relevant env vars in your shell profile:
