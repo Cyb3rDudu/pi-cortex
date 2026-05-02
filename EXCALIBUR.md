@@ -123,7 +123,54 @@ sudo nerdctl run -d --name mcp-memory --restart=always \
 
 If you ever see `database is locked` again, first sanity-check that `mcp-memory` is still attached to the dashboard's namespace (`sudo nerdctl inspect mcp-memory | grep NetworkMode` should show `container:mcp-dashboard`). If it's not, the lock contention is back and the recreate above is the fix.
 
-A sqlite snapshot lives at `/opt/mcp-memory/manual-backups/pre-redeploy-*` from the cutover; daily backups are written by mcp-memory-service to the `mcp-memory_mcp-dashboard-backups` volume.
+### Wipe + restart (clean DB)
+
+Months of pre-cutover dual-writer contention left at least one row with on-disk page corruption that `PRAGMA integrity_check` and `PRAGMA quick_check` could not detect (only the actual UPDATE on row id=726 surfaced it as "database disk image is malformed"). On 2026-05-02 we wiped the live DB and restarted with a fresh empty store under the v0.2 schema. The repair-vs-rebuild calculus tipped to rebuild because (a) the cleanup pass would have had to rewrite ~470 memories anyway, (b) the corrupt-page count was unbounded — one confirmed, no way to know how many more, (c) most pre-cutover content was pre-namespace and would have needed a tag overhaul regardless.
+
+To wipe (use sparingly — destroys all live memories):
+
+```bash
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+ssh dudu@192.168.1.105 "sudo cp -p /opt/mcp-memory/data/memories.db /opt/mcp-memory/manual-backups/pre-wipe-${TS}.memories.db"
+ssh dudu@192.168.1.105 "sudo cp -p /opt/mcp-memory/data/sqlite_vec.db /opt/mcp-memory/manual-backups/pre-wipe-${TS}.sqlite_vec.db"
+ssh dudu@192.168.1.105 'sudo nerdctl stop mcp-memory && sudo nerdctl rm mcp-memory'
+ssh dudu@192.168.1.105 'sudo nerdctl stop mcp-dashboard'
+ssh dudu@192.168.1.105 "sudo mv /opt/mcp-memory/data/memories.db /opt/mcp-memory/manual-backups/wiped-from-live-${TS}.memories.db"
+ssh dudu@192.168.1.105 "sudo mv /opt/mcp-memory/data/memories.db-wal /opt/mcp-memory/manual-backups/wiped-from-live-${TS}.memories.db-wal 2>/dev/null || true"
+ssh dudu@192.168.1.105 "sudo mv /opt/mcp-memory/data/memories.db-shm /opt/mcp-memory/manual-backups/wiped-from-live-${TS}.memories.db-shm 2>/dev/null || true"
+ssh dudu@192.168.1.105 "sudo mv /opt/mcp-memory/data/sqlite_vec.db /opt/mcp-memory/manual-backups/wiped-from-live-${TS}.sqlite_vec.db"
+ssh dudu@192.168.1.105 'sudo nerdctl start mcp-dashboard'
+# wait for /api/health to return healthy, then bring mcp-memory back up
+# via the recreate command above.
+```
+
+### Backup index
+
+Snapshots in `/opt/mcp-memory/manual-backups/` (preserved across container recreates; the volume lives in `/var/lib/nerdctl/.../mcp-memory_mcp-dashboard-backups/_data/` for the daily auto-backups, but the manual snapshots live directly on the host bind-mount):
+
+| Prefix | Reason | Notes |
+|---|---|---|
+| `pre-redeploy-20260502T073358Z.*` | Before container split → shared-namespace cutover | DB had 474 memories; WAL frozen at last successful write 2026-05-01 19:04 due to dual-writer lock |
+| `pre-tag-cleanup-20260502T075650Z.*` | Before tag-cleanup attempt | 474 memories, 555 distinct tags, all pre-namespace |
+| `pre-fts-rebuild-20260502T082532Z.*` | Before FTS5 rebuild attempt for row 726 | Rebuild was unnecessary (FTS5 integrity-check passed); page-level corruption was elsewhere |
+| `pre-row726-repair-20260502T092840Z.*` | Before repair attempt that never ran | We pivoted to wipe instead |
+| `pre-wipe-20260502T093222Z.*` + `wiped-from-live-20260502T093222Z.*` | The full pre-wipe state, both as a copy and as the moved-aside live files | This is the canonical "everything before the wipe" snapshot if you ever need to mine the old corpus |
+
+The `wiped-from-live-*` files are the EXACT bytes that were live at wipe time (mv'd, not copied). The `pre-wipe-*` files are a `cp -p` of the same state taken seconds before. Keeping both in case one gets damaged by future filesystem mishaps.
+
+To inspect the old corpus without touching the live DB, you can attach to it from any sqlite-capable container:
+
+```bash
+ssh dudu@192.168.1.105 'sudo nerdctl exec mcp-dashboard python3 -c "
+import sqlite3
+c = sqlite3.connect(\"/app/backups/wiped-from-live-20260502T093222Z.memories.db\")
+# ...query the old data read-only...
+"'
+```
+
+(The `mcp-memory_mcp-dashboard-backups` volume mounts to `/app/backups` inside the container; copy the `wiped-from-live-*` files there if you want them visible to the running service for read-only inspection.)
+
+Daily auto-backups continue to write to the `mcp-memory_mcp-dashboard-backups` volume — those are the rolling restore points going forward.
 
 ## Built-in skills available to Pi
 
