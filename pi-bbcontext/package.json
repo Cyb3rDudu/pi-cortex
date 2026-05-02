@@ -1,18 +1,19 @@
 {
-  "name": "@cyb3rdudu/pi-bbcontext",
+  "name": "pi-extension-bbcontext",
   "version": "0.1.0",
+  "private": true,
+  "type": "module",
   "description": "Pi extension that auto-injects relevant memories from mcp-memory-service into the system prompt at every turn — opencode-style memory awareness for Pi.",
   "license": "MIT",
   "author": "Cyb3rDudu",
-  "type": "module",
-  "main": "src/index.ts",
-  "files": ["src"],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "keywords": ["pi-extension", "pi-coding-agent", "mcp-memory-service", "memory", "context", "auto-inject"],
   "repository": {
     "type": "git",
     "url": "https://github.com/Cyb3rDudu/pi-extensions.git"
-  },
-  "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*"
   }
 }
