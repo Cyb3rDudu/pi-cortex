@@ -189,8 +189,18 @@ async function searchByTagOnce(tags: string[], matchAll: boolean): Promise<Memor
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error(`mcp-memory-service ${res.status}`);
-  const data = (await res.json()) as { results?: MemoryShape[]; memories?: MemoryShape[] };
-  return data.results ?? data.memories ?? [];
+  // Search endpoints wrap hits in { memory, similarity_score, relevance_reason };
+  // the listing endpoint returns flat memories. Normalize both shapes.
+  const data = (await res.json()) as { results?: unknown[]; memories?: unknown[] };
+  const items = data.results ?? data.memories ?? [];
+  return items
+    .map((item) => {
+      if (item && typeof item === "object" && "memory" in item) {
+        return (item as { memory?: MemoryShape }).memory;
+      }
+      return item as MemoryShape;
+    })
+    .filter((m): m is MemoryShape => !!m && typeof m === "object");
 }
 
 async function findLatestRecapHash(projectKey: string): Promise<string | null> {
