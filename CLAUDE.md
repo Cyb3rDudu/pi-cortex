@@ -194,7 +194,10 @@ To ensure a project's memories are recallable from any machine, derive the key i
 
 1. If cwd is inside a git repo with a remote: `proj:<host>/<owner>/<repo>` parsed from `git remote get-url origin` (e.g. `proj:github.com/Cyb3rDudu/pi-cortex`).
 2. Else if cwd looks like a project (has `package.json`, `go.mod`, `pyproject.toml`, `Cargo.toml`, `composer.json`, `Gemfile`, or `.git`): `proj:<basename>`.
-3. Else: no project key can be derived.
+3. Else if cwd is *under* one of the configured `PI_CORTEX_PROJECT_ROOTS`: `proj:<first-segment-after-root>`. This handles the "directory of projects" pattern — e.g. with `PI_CORTEX_PROJECT_ROOTS=~/Code,~/Code/bounties`, working in `~/Code/bounties/acme.com/notes/` resolves to `proj:acme.com` even though there's no git repo or project marker. When multiple roots match, the deepest (most-specific) wins, so `~/Code/bounties` correctly beats `~/Code`.
+4. Else: no project key can be derived.
+
+In addition to (3), `PI_CORTEX_TOPIC_ROOTS` maps a parent path to a topic tag (e.g. `~/Code/bounties=bug-bounty,~/Reading=research`). Any cwd under that root gets the matching `topic:<value>` appended to whatever the extension does — `pi-bbcontext` adds a topic bucket alongside the project bucket, and `pi-recap` writes the topic tag(s) onto the stored recap so future searches surface it via either anchor.
 
 Behaviour when no key can be derived:
 
@@ -224,7 +227,9 @@ Behaviour when no key can be derived:
 |---|---|---|---|
 | `PI_MEMORY_ENDPOINT` | all | `http://127.0.0.1:8000` | Base URL of mcp-memory-service REST API |
 | `PI_MEMORY_API_KEY` | all | — | Bearer token (omit for anonymous) |
-| `PI_BBCONTEXT_TAGS` | bbcontext | — | Comma-separated tags to additionally filter every auto-injected bucket (project + globals) |
+| `PI_CORTEX_PROJECT_ROOTS` | bbcontext + recap | — | Comma-separated parent dirs (`~` expanded). When cwd is under any of them, the first path segment under the root becomes the project key — even without git or a project marker. Deeper roots win on ambiguity |
+| `PI_CORTEX_TOPIC_ROOTS` | bbcontext + recap | — | Comma-separated `<path>=<topic>` pairs. When cwd is under `<path>`, append `topic:<topic>` (extra search bucket for bbcontext, extra stored tag for recap). Example: `~/Code/bounties=bug-bounty,~/Reading=research` |
+| `PI_BBCONTEXT_TAGS` | bbcontext | — | Comma-separated tags to additionally filter every auto-injected bucket (project + topic + globals) |
 | `PI_BBCONTEXT_MAX` | bbcontext | `8` | Total memory budget across all buckets (greedy fill — not per-bucket) |
 | `PI_BBCONTEXT_QUERY` | bbcontext | `{project} recent work decisions findings` | Semantic query template used **only** when tag-based search returns 0 hits. `{project}` / `{parent}` expand to cwd parts |
 | `PI_BBCONTEXT_INCLUDE_GLOBAL` | bbcontext | — | If set to `1`, also pull memories tagged `proj:none` (cross-cutting writes from non-Pi clients) into the injected block |

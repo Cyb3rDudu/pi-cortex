@@ -19,7 +19,7 @@ Use this when you want an agent that *can* read/write memory but only when it de
 
 ### `pi-bbcontext` — auto-inject memories into the system prompt
 
-Project-aware auto-injection. Derives a `proj:<key>` tag from `git remote get-url origin` (or a project marker like `package.json` / `go.mod`), pulls memories tagged with that key from `mcp-memory-service`, and appends them to the system prompt on every `before_agent_start` (delimited so the model knows it's context, not instructions). Optionally also pulls cross-cutting `proj:none` memories with `PI_BBCONTEXT_INCLUDE_GLOBAL=1`. Falls back to semantic search via `PI_BBCONTEXT_QUERY` only when both tag buckets return zero hits.
+Project-aware auto-injection. Derives a `proj:<key>` tag from `git remote get-url origin`, a project marker like `package.json` / `go.mod`, or — when configured via `PI_CORTEX_PROJECT_ROOTS` — the first folder under a known parent dir (so `~/Code/bounties/acme.com/` becomes `proj:acme.com` even with no git repo). Pulls memories tagged with that key from `mcp-memory-service`, plus optional `topic:<x>` buckets via `PI_CORTEX_TOPIC_ROOTS` (e.g. everything under `~/Code/bounties` also gets `topic:bug-bounty` cross-target memories), and appends them to the system prompt on every `before_agent_start`. Optionally also pulls cross-cutting `proj:none` memories with `PI_BBCONTEXT_INCLUDE_GLOBAL=1`. Falls back to semantic search via `PI_BBCONTEXT_QUERY` only when every tag bucket returns zero hits.
 
 Use this when you want zero-touch memory recall — the agent always sees the relevant snippets without needing to call a tool.
 
@@ -37,6 +37,8 @@ All three extensions read environment variables:
 |---|---|---|---|
 | `PI_MEMORY_ENDPOINT` | all | `http://127.0.0.1:8000` | Base URL of mcp-memory-service HTTP API |
 | `PI_MEMORY_API_KEY` | all | — | Bearer token (omit if anonymous access is allowed) |
+| `PI_CORTEX_PROJECT_ROOTS` | bbcontext + recap | — | Comma-separated parent dirs. When cwd is under any of them, the first segment under the root becomes the project key (works without git or project markers). Example: `~/Code,~/Code/bounties` |
+| `PI_CORTEX_TOPIC_ROOTS` | bbcontext + recap | — | Comma-separated `<path>=<topic>` pairs that auto-attach a `topic:<value>` tag for any cwd under `<path>`. Example: `~/Code/bounties=bug-bounty,~/Reading=research` |
 | `PI_BBCONTEXT_TAGS` | bbcontext | — | Comma-separated tags to additionally narrow every injected bucket |
 | `PI_BBCONTEXT_MAX` | bbcontext | `8` | Total memory budget across buckets (greedy fill, not per-bucket) |
 | `PI_BBCONTEXT_QUERY` | bbcontext | `{project} recent work decisions findings` | Semantic fallback query (used **only** when tag search returns 0); `{project}` / `{parent}` expand to cwd parts |

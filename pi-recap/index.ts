@@ -11,11 +11,16 @@
  *
  * Each recap is stored with:
  *   - tags = ["proj:<key>", "type:session-recap", "source:pi-recap",
- *             "date:YYYY-MM-DD"]
+ *             "date:YYYY-MM-DD", ...topic tags]
  *   - memory_type = "session-recap"
  *   - parent_id   = content_hash of the previous recap for this project
  *                   (chain across sessions; queried at startup, updated after
  *                   each successful write)
+ *
+ * Project key derivation order: git remote → project marker → configured
+ * PI_CORTEX_PROJECT_ROOTS (so e.g. ~/Code/bounties/acme.com/ → proj:acme.com
+ * even without a git repo). Topic tags come from PI_CORTEX_TOPIC_ROOTS
+ * (e.g. ~/Code/bounties=bug-bounty appends `topic:bug-bounty`).
  *
  * Configure via environment variables (see CLAUDE.md for the full table).
  *
@@ -24,6 +29,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
@@ -41,6 +47,8 @@ const DISABLED = !!process.env.PI_RECAP_DISABLE;
 const MIN_MESSAGES = clampInt(process.env.PI_RECAP_MIN_MESSAGES, 4, 1, 1000);
 const MAX_CHARS = clampInt(process.env.PI_RECAP_MAX_CHARS, 24_000, 1_000, 200_000);
 const MODEL_OVERRIDE = process.env.PI_RECAP_MODEL ?? "";
+const PROJECT_ROOTS = parsePathList(process.env.PI_CORTEX_PROJECT_ROOTS);
+const TOPIC_ROOTS = parseTopicRoots(process.env.PI_CORTEX_TOPIC_ROOTS);
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
   const n = Number.parseInt(raw ?? "", 10);
@@ -57,6 +65,66 @@ const PROJECT_MARKERS = [
   "Gemfile",
   ".git",
 ];
+
+function expandHome(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function parsePathList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((p) => path.resolve(expandHome(p)));
+}
+
+interface TopicRoot {
+  root: string;
+  topic: string;
+}
+
+function parseTopicRoots(raw: string | undefined): TopicRoot[] {
+  if (!raw) return [];
+  const out: TopicRoot[] = [];
+  for (const piece of raw.split(",")) {
+    const trimmed = piece.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0 || eq === trimmed.length - 1) continue;
+    const root = path.resolve(expandHome(trimmed.slice(0, eq).trim()));
+    const topic = trimmed.slice(eq + 1).trim();
+    if (root && topic) out.push({ root, topic });
+  }
+  return out;
+}
+
+function isUnderRoot(cwd: string, root: string): boolean {
+  if (cwd === root) return false;
+  const rel = path.relative(root, cwd);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function deriveFromRoots(cwd: string, roots: string[]): string | null {
+  const sorted = [...roots].sort((a, b) => b.length - a.length);
+  for (const root of sorted) {
+    if (!isUnderRoot(cwd, root)) continue;
+    const rel = path.relative(root, cwd);
+    const first = rel.split(path.sep)[0];
+    if (first) return `proj:${first}`;
+  }
+  return null;
+}
+
+function deriveTopicTags(cwd: string, topicRoots: TopicRoot[]): string[] {
+  const tags = new Set<string>();
+  for (const { root, topic } of topicRoots) {
+    if (isUnderRoot(cwd, root)) tags.add(`topic:${topic}`);
+  }
+  return [...tags];
+}
 
 function safeGitRemote(cwd: string): string | null {
   try {
@@ -95,6 +163,8 @@ function deriveProjectKey(cwd: string): string | null {
       return `proj:${path.basename(cwd)}`;
     }
   }
+  const fromRoots = deriveFromRoots(cwd, PROJECT_ROOTS);
+  if (fromRoots) return fromRoots;
   return null;
 }
 
@@ -141,13 +211,14 @@ interface StoreResult {
 
 async function storeRecap(
   projectKey: string,
+  topicTags: string[],
   content: string,
   parentHash: string | null,
 ): Promise<string | null> {
   const isoDate = new Date().toISOString().slice(0, 10);
   const body: Record<string, unknown> = {
     content,
-    tags: [projectKey, "type:session-recap", "source:pi-recap", `date:${isoDate}`],
+    tags: [projectKey, "type:session-recap", "source:pi-recap", `date:${isoDate}`, ...topicTags],
     memory_type: "session-recap",
   };
   if (parentHash) {
@@ -323,6 +394,7 @@ async function summarize(
 
 interface RecapState {
   projectKey: string;
+  topicTags: string[];
   parentHash: string | null;
   lastRecappedEntryId: string | null;
   lastRecap: { trigger: string; at: number; content: string; hash: string | null } | null;
@@ -368,7 +440,7 @@ async function runRecap(
     if (!summary) return { ok: false, reason: "no model with API key available for summarization" };
     const header = `# Session recap (${trigger}) — ${new Date().toISOString()}\nProject: ${state.projectKey}\n\n`;
     const content = header + summary;
-    const hash = await storeRecap(state.projectKey, content, state.parentHash);
+    const hash = await storeRecap(state.projectKey, state.topicTags, content, state.parentHash);
     state.parentHash = hash ?? state.parentHash;
     state.lastRecappedEntryId = lastEntryId ?? state.lastRecappedEntryId;
     state.lastRecap = { trigger, at: Date.now(), content, hash };
@@ -393,6 +465,7 @@ export default async function piRecapExtension(pi: ExtensionAPI) {
 
   const state: RecapState = {
     projectKey,
+    topicTags: deriveTopicTags(cwd, TOPIC_ROOTS),
     parentHash: await findLatestRecapHash(projectKey),
     lastRecappedEntryId: null,
     lastRecap: null,
@@ -430,7 +503,7 @@ export default async function piRecapExtension(pi: ExtensionAPI) {
           ? `chain parent: ${state.parentHash.slice(0, 8)}…`
           : "chain parent: none (first recap for this project)";
         ctx.ui.notify(
-          `pi-recap: project=${state.projectKey}, ${lastLine}, ${parentLine}, in_flight=${state.inFlight}`,
+          `pi-recap: project=${state.projectKey}, topics=[${state.topicTags.join(",")}], ${lastLine}, ${parentLine}, in_flight=${state.inFlight}`,
           "info",
         );
         if (last) ctx.ui.notify(last.content, "info");

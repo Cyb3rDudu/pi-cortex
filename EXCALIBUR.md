@@ -50,6 +50,8 @@ Persisted in two layers (fish universal vars + `~/.bashrc` exports) so both inte
 |---|---|---|
 | `PI_OFFLINE` | `1` | Suppress all Pi startup network calls (telemetry, update checks) |
 | `PI_MEMORY_ENDPOINT` | `http://192.168.1.105:8000` | nexus mcp-memory-service REST URL |
+| `PI_CORTEX_PROJECT_ROOTS` | `~/Code,~/Code/bounties` | Treat first folder under either path as the project (so `~/Code/bounties/acme.com/` → `proj:acme.com`, `~/Code/carrier-admin/` → `proj:carrier-admin`) even with no git repo |
+| `PI_CORTEX_TOPIC_ROOTS` | `~/Code/bounties=bug-bounty` | Auto-attach `topic:bug-bounty` to any work under `~/Code/bounties` (extra search bucket for bbcontext, extra stored tag on recaps) |
 | `PI_BBCONTEXT_MAX` | `8` | Total memory budget per system-prompt injection |
 | `PI_BBCONTEXT_INCLUDE_GLOBAL` | unset (set to `1` to enable) | Pull `proj:none` cross-cutting memories alongside the project bucket |
 | `PI_RECAP_MIN_MESSAGES` | unset (defaults to `4`) | Minimum branch messages before `pi-recap` writes anything |

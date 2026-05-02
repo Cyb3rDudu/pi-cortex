@@ -4,19 +4,27 @@
  * Project-aware auto-injection of long-term memories into the Pi system prompt.
  *
  * Flow on every `before_agent_start`:
- *   1. Derive a project key from cwd (git remote → "host/owner/repo", else project
- *      marker → basename, else: NO-OP — Pi extensions never write or surface
- *      `proj:none`).
- *   2. Pull memories from buckets in priority order:
+ *   1. Derive a project key from cwd:
+ *        a. git remote → "host/owner/repo"
+ *        b. project marker (package.json / go.mod / etc.) → basename
+ *        c. configured PI_CORTEX_PROJECT_ROOTS → first path segment under the
+ *           matching root (so e.g. ~/Code/bounties/acme.com → proj:acme.com
+ *           even without a git repo or project marker)
+ *        else NO-OP — Pi extensions never write or surface `proj:none`.
+ *   2. Derive topic tags from cwd via PI_CORTEX_TOPIC_ROOTS (e.g.
+ *      ~/Code/bounties=bug-bounty appends `topic:bug-bounty` for any cwd
+ *      under ~/Code/bounties).
+ *   3. Pull memories from buckets in priority order:
  *        a. project bucket  — search_by_tag(["proj:<key>"])
- *        b. global bucket   — search_by_tag(["proj:none"])  (only if
+ *        b. topic bucket(s) — search_by_tag(["topic:<x>"])  per derived topic
+ *        c. global bucket   — search_by_tag(["proj:none"])  (only if
  *                             PI_BBCONTEXT_INCLUDE_GLOBAL=1)
  *      Apply PI_BBCONTEXT_TAGS as an additional filter consistently across all
  *      buckets. Greedy-fill up to PI_BBCONTEXT_MAX (it is a budget, not a
  *      per-bucket quota).
- *   3. If both buckets returned zero hits, fall back to a single semantic query
- *      built from PI_BBCONTEXT_QUERY (still respects PI_BBCONTEXT_TAGS).
- *   4. Render and append AFTER the base system prompt — "this is context, not
+ *   4. If every tag bucket returned zero hits, fall back to a single semantic
+ *      query built from PI_BBCONTEXT_QUERY (still respects PI_BBCONTEXT_TAGS).
+ *   5. Render and append AFTER the base system prompt — "this is context, not
  *      instructions" reads naturally last.
  *
  * Configure via environment variables (see CLAUDE.md for the full table).
@@ -26,6 +34,7 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -39,6 +48,8 @@ const TAGS = (process.env.PI_BBCONTEXT_TAGS ?? "")
 const QUERY_TEMPLATE = process.env.PI_BBCONTEXT_QUERY ?? "{project} recent work decisions findings";
 const DISABLED = !!process.env.PI_BBCONTEXT_DISABLE;
 const INCLUDE_GLOBAL = process.env.PI_BBCONTEXT_INCLUDE_GLOBAL === "1";
+const PROJECT_ROOTS = parsePathList(process.env.PI_CORTEX_PROJECT_ROOTS);
+const TOPIC_ROOTS = parseTopicRoots(process.env.PI_CORTEX_TOPIC_ROOTS);
 const REFRESH_TTL_MS = 60_000;
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -54,7 +65,7 @@ interface Memory {
   created_at_iso?: string;
 }
 
-type Bucket = "project" | "global" | "semantic";
+type Bucket = "project" | "topic" | "global" | "semantic";
 
 interface ScoredMemory {
   memory: Memory;
@@ -70,6 +81,68 @@ const PROJECT_MARKERS = [
   "Gemfile",
   ".git",
 ];
+
+function expandHome(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function parsePathList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((p) => path.resolve(expandHome(p)));
+}
+
+interface TopicRoot {
+  root: string;
+  topic: string;
+}
+
+function parseTopicRoots(raw: string | undefined): TopicRoot[] {
+  if (!raw) return [];
+  const out: TopicRoot[] = [];
+  for (const piece of raw.split(",")) {
+    const trimmed = piece.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0 || eq === trimmed.length - 1) continue;
+    const root = path.resolve(expandHome(trimmed.slice(0, eq).trim()));
+    const topic = trimmed.slice(eq + 1).trim();
+    if (root && topic) out.push({ root, topic });
+  }
+  return out;
+}
+
+function isUnderRoot(cwd: string, root: string): boolean {
+  if (cwd === root) return false;
+  const rel = path.relative(root, cwd);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function deriveFromRoots(cwd: string, roots: string[]): string | null {
+  // Sort by descending depth so more-specific roots win (e.g. Code/bounties
+  // beats Code when both are configured).
+  const sorted = [...roots].sort((a, b) => b.length - a.length);
+  for (const root of sorted) {
+    if (!isUnderRoot(cwd, root)) continue;
+    const rel = path.relative(root, cwd);
+    const first = rel.split(path.sep)[0];
+    if (first) return `proj:${first}`;
+  }
+  return null;
+}
+
+function deriveTopicTags(cwd: string, topicRoots: TopicRoot[]): string[] {
+  const tags = new Set<string>();
+  for (const { root, topic } of topicRoots) {
+    if (isUnderRoot(cwd, root)) tags.add(`topic:${topic}`);
+  }
+  return [...tags];
+}
 
 function safeGitRemote(cwd: string): string | null {
   try {
@@ -109,6 +182,8 @@ function deriveProjectKey(cwd: string): string | null {
       return `proj:${path.basename(cwd)}`;
     }
   }
+  const fromRoots = deriveFromRoots(cwd, PROJECT_ROOTS);
+  if (fromRoots) return fromRoots;
   return null;
 }
 
@@ -173,7 +248,11 @@ function buildSemanticQuery(cwd: string): string {
   return QUERY_TEMPLATE.replaceAll("{project}", project).replaceAll("{parent}", parent);
 }
 
-async function gatherMemories(cwd: string, projectKey: string): Promise<ScoredMemory[]> {
+async function gatherMemories(
+  cwd: string,
+  projectKey: string,
+  topicTags: string[],
+): Promise<ScoredMemory[]> {
   const buckets: ScoredMemory[] = [];
 
   // Bucket A: project-scoped.
@@ -184,7 +263,17 @@ async function gatherMemories(cwd: string, projectKey: string): Promise<ScoredMe
     // Service may be down; carry on with whatever we have.
   }
 
-  // Bucket B: globals (opt-in).
+  // Bucket B: topic-scoped (one or more topics from PI_CORTEX_TOPIC_ROOTS).
+  for (const topicTag of topicTags) {
+    try {
+      const topical = applyExtraTagFilter(await searchByTag([topicTag], true), TAGS).sort(recencyDesc);
+      for (const m of topical) buckets.push({ memory: m, bucket: "topic" });
+    } catch {
+      // ignore
+    }
+  }
+
+  // Bucket C: globals (opt-in).
   if (INCLUDE_GLOBAL) {
     try {
       const globals = applyExtraTagFilter(await searchByTag(["proj:none"], true), TAGS).sort(recencyDesc);
@@ -225,7 +314,7 @@ function buildBlock(projectKey: string, scored: ScoredMemory[]): string {
       acc[s.bucket] = (acc[s.bucket] ?? 0) + 1;
       return acc;
     },
-    { project: 0, global: 0, semantic: 0 },
+    { project: 0, topic: 0, global: 0, semantic: 0 },
   );
   const summary = Object.entries(counts)
     .filter(([, n]) => n > 0)
@@ -253,12 +342,13 @@ export default async function piBbContextExtension(pi: ExtensionAPI) {
     // No-op: per CLAUDE.md, Pi extensions never inject when no proj key derives.
     return;
   }
+  const topicTags = deriveTopicTags(cwd, TOPIC_ROOTS);
 
   const cache: CachedBlock = { text: null, at: 0, projectKey };
   let refreshing = false;
 
   async function refresh(): Promise<void> {
-    const scored = await gatherMemories(cwd, projectKey!);
+    const scored = await gatherMemories(cwd, projectKey!, topicTags);
     cache.text = scored.length > 0 ? buildBlock(projectKey!, scored) : null;
     cache.at = Date.now();
   }
@@ -302,9 +392,11 @@ export default async function piBbContextExtension(pi: ExtensionAPI) {
       if (cmd === "status") {
         const ageS = cache.at ? Math.round((Date.now() - cache.at) / 1000) : null;
         ctx.ui.notify(
-          `pi-bbcontext: project=${projectKey}, cached=${cache.text ? "yes" : "no"}${
-            ageS !== null ? `, age=${ageS}s` : ""
-          }, include_global=${INCLUDE_GLOBAL}, tags_filter=[${TAGS.join(",")}], max=${MAX}`,
+          `pi-bbcontext: project=${projectKey}, topics=[${topicTags.join(",")}], cached=${
+            cache.text ? "yes" : "no"
+          }${ageS !== null ? `, age=${ageS}s` : ""}, include_global=${INCLUDE_GLOBAL}, tags_filter=[${TAGS.join(
+            ",",
+          )}], max=${MAX}`,
           "info",
         );
         return;
