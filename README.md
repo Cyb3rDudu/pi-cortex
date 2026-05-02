@@ -1,6 +1,6 @@
-# pi-extensions
+# pi-cortex
 
-Two small [Pi](https://pi.dev/) extensions that wire [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service) into Pi without going through the MCP protocol — Pi's design favours direct tools over protocol layers, so we hit the service's REST API directly.
+A cognitive layer for [Pi](https://pi.dev/). `pi-cortex` is a small set of Pi extensions that wire [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service) into the Pi coding agent without going through the MCP protocol — Pi's design favours direct tools over protocol layers, so we hit the service's REST API directly.
 
 ## Extensions
 
@@ -43,12 +43,12 @@ Both extensions read environment variables:
 These extensions are loaded by Pi from any of its extension directories — the easiest path is:
 
 ```bash
-git clone https://github.com/Cyb3rDudu/pi-extensions.git ~/src/pi-extensions
+git clone https://github.com/Cyb3rDudu/pi-cortex.git ~/src/pi-cortex
 
 # Symlink each extension into Pi's user-extensions dir
 mkdir -p ~/.pi/agent/extensions
-ln -sfn ~/src/pi-extensions/pi-memory     ~/.pi/agent/extensions/pi-memory
-ln -sfn ~/src/pi-extensions/pi-bbcontext  ~/.pi/agent/extensions/pi-bbcontext
+ln -sfn ~/src/pi-cortex/pi-memory     ~/.pi/agent/extensions/pi-memory
+ln -sfn ~/src/pi-cortex/pi-bbcontext  ~/.pi/agent/extensions/pi-bbcontext
 ```
 
 Then export the relevant env vars in your shell profile:

@@ -1,10 +1,10 @@
-# pi-extensions
+# pi-cortex
 
-Pi-coding-agent extensions that turn the [pi.dev](https://pi.dev/) CLI into a memory-aware assistant by wiring it directly to [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service). No MCP protocol layer — Pi prefers direct tools, so we hit the service's REST API and use Pi's native hooks.
+A cognitive layer for the [pi.dev](https://pi.dev/) coding agent. `pi-cortex` is a set of Pi extensions that wire the agent directly to [mcp-memory-service](https://github.com/doobidoo/mcp-memory-service) — long-term memory, auto-injected context, periodic recaps. No MCP protocol layer; Pi prefers direct tools, so we hit the service's REST API and use Pi's native hooks.
 
 ## Why this exists
 
-Long-term memory is a property of the *user*, not of the LLM. Every coding session should pick up where the last one left off, regardless of which tool or model was used. mcp-memory-service is the central store; this repo is the Pi-side adapter.
+Long-term memory is a property of the *user*, not of the LLM. Every coding session should pick up where the last one left off, regardless of which tool or model was used. mcp-memory-service is the central store; `pi-cortex` is the Pi-side adapter.
 
 ## Architecture
 
@@ -42,7 +42,7 @@ Long-term memory is a property of the *user*, not of the LLM. Every coding sessi
 ## Repo layout
 
 ```
-pi-extensions/
+pi-cortex/
 ├── CLAUDE.md            ← project context (this file)
 ├── EXCALIBUR.md         ← deployment specifics for the dev/test box
 ├── README.md            ← user-facing install + config
@@ -119,7 +119,7 @@ Exactly one of each:
 
 | Prefix | Purpose | Examples |
 |---|---|---|
-| `proj:` | Project key — the stable identity of what this memory is about | `proj:github.com/Cyb3rDudu/pi-extensions`<br>`proj:acme.com`<br>`proj:none` for cross-project / global notes |
+| `proj:` | Project key — the stable identity of what this memory is about | `proj:github.com/Cyb3rDudu/pi-cortex`<br>`proj:acme.com`<br>`proj:none` for cross-project / global notes |
 | `type:` | What kind of memory it is (drives ranking and filtering) | see table below |
 
 ### Memory types (`type:` values)
@@ -164,7 +164,7 @@ Storage adapters (and `memory_store`) attach these automatically; the user does 
 
 To ensure a project's memories are recallable from any machine, derive the key in this order:
 
-1. If cwd is inside a git repo with a remote: `proj:<host>/<owner>/<repo>` parsed from `git remote get-url origin` (e.g. `proj:github.com/Cyb3rDudu/pi-extensions`).
+1. If cwd is inside a git repo with a remote: `proj:<host>/<owner>/<repo>` parsed from `git remote get-url origin` (e.g. `proj:github.com/Cyb3rDudu/pi-cortex`).
 2. Else if cwd looks like a project (has `package.json`, `go.mod`, `pyproject.toml`, `Cargo.toml`, `composer.json`, `Gemfile`, or `.git`): `proj:<basename>`.
 3. Else: do not assign a project key. The memory is either `proj:none` (cross-cutting) or should not be auto-injected anywhere.
 
@@ -219,7 +219,7 @@ Scope is the extension dir name (`memory`, `bbcontext`) or `extensions`/`docs` f
 
 ## Local dev workflow
 
-1. Edit on the Mac in `~/Code/pi-extensions/`.
+1. Edit on the Mac in `~/Code/pi-cortex/`.
 2. Commit + push.
 3. On the deployment box (see `EXCALIBUR.md`), `git pull` and restart Pi — extension changes are picked up on the next session.
 

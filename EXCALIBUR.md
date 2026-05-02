@@ -25,9 +25,9 @@ Default shell: fish. Alt-shell: bash (via `~/.bashrc`).
 Cloned source-of-truth and symlinks into Pi's user-extensions dir:
 
 ```
-~/src/pi-extensions/                       ← git clone of Cyb3rDudu/pi-extensions
-~/.pi/agent/extensions/pi-memory      → ~/src/pi-extensions/pi-memory
-~/.pi/agent/extensions/pi-bbcontext   → ~/src/pi-extensions/pi-bbcontext
+~/src/pi-cortex/                       ← git clone of Cyb3rDudu/pi-cortex
+~/.pi/agent/extensions/pi-memory      → ~/src/pi-cortex/pi-memory
+~/.pi/agent/extensions/pi-bbcontext   → ~/src/pi-cortex/pi-bbcontext
 ```
 
 Pi auto-discovers any `package.json` under `~/.pi/agent/extensions/*/` that has `"pi": { "extensions": ["./index.ts"] }`.
@@ -68,7 +68,7 @@ Pi finds it under "user" skills. Edit the canonical file once; both pi and openc
 After committing changes on the Mac:
 
 ```bash
-ssh dudu@192.168.1.103 'cd ~/src/pi-extensions && git pull --ff-only'
+ssh dudu@192.168.1.103 'cd ~/src/pi-cortex && git pull --ff-only'
 ```
 
 Then restart any open Pi sessions on excalibur. Extension changes are loaded at extension-factory time, so a new `pi` invocation picks them up.
