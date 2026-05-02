@@ -1,0 +1,19 @@
+{
+  "name": "@cyb3rdudu/pi-memory",
+  "version": "0.1.0",
+  "description": "Pi extension exposing mcp-memory-service as native Pi tools (memory_search, memory_store, memory_recent, memory_search_by_tag) — no MCP layer required.",
+  "license": "MIT",
+  "author": "Cyb3rDudu",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": ["src"],
+  "keywords": ["pi-extension", "pi-coding-agent", "mcp-memory-service", "memory", "rag"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cyb3rDudu/pi-extensions.git"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
