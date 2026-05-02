@@ -204,20 +204,32 @@ async function callJson<T>(pathname: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+// mcp-memory-service search endpoints wrap each hit:
+//   { results: [{ memory: <Memory>, similarity_score, relevance_reason }, ...] }
+// The /api/memories listing returns flat:
+//   { memories: [<Memory>, ...] }
+// Normalize both to a flat Memory[].
+function normalizeMemoryList(raw: unknown): Memory[] {
+  const data = raw as { results?: unknown[]; memories?: unknown[] };
+  const items = data.results ?? data.memories ?? [];
+  return items
+    .map((item) => {
+      if (item && typeof item === "object" && "memory" in item) {
+        return (item as { memory?: Memory }).memory;
+      }
+      return item as Memory;
+    })
+    .filter((m): m is Memory => !!m && typeof m === "object");
+}
+
 async function searchByTag(tags: string[], matchAll: boolean): Promise<Memory[]> {
-  const data = await callJson<{ results?: Memory[]; memories?: Memory[] }>("/api/search/by-tag", {
-    tags,
-    match_all: matchAll,
-  });
-  return data.results ?? data.memories ?? [];
+  return normalizeMemoryList(
+    await callJson("/api/search/by-tag", { tags, match_all: matchAll }),
+  );
 }
 
 async function searchSemantic(query: string, n: number): Promise<Memory[]> {
-  const data = await callJson<{ results?: Memory[]; memories?: Memory[] }>("/api/search", {
-    query,
-    n_results: n,
-  });
-  return data.results ?? data.memories ?? [];
+  return normalizeMemoryList(await callJson("/api/search", { query, n_results: n }));
 }
 
 function applyExtraTagFilter(memories: Memory[], wanted: string[]): Memory[] {
