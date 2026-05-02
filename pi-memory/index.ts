@@ -48,7 +48,16 @@ async function call<T = unknown>(
 		const text = await res.text().catch(() => "");
 		throw new Error(`mcp-memory-service ${res.status}: ${text || res.statusText}`);
 	}
-	return (await res.json()) as T;
+	const data = (await res.json()) as T;
+	// mcp-memory-service returns HTTP 200 with `{success: false, message: ...}`
+	// for application-level failures (db locked, duplicate-content dedupe, etc.).
+	// Surface those as thrown errors so the LLM sees the real outcome instead
+	// of a hallucinated success.
+	const maybe = data as unknown as { success?: boolean; message?: string };
+	if (maybe && maybe.success === false) {
+		throw new Error(`mcp-memory-service refused: ${maybe.message ?? "unknown error"}`);
+	}
+	return data;
 }
 
 interface MemoryShape {
@@ -58,6 +67,23 @@ interface MemoryShape {
 	memory_type?: string;
 	created_at_iso?: string;
 	[k: string]: unknown;
+}
+
+// mcp-memory-service search endpoints wrap each hit:
+//   { results: [{ memory: <Memory>, similarity_score, relevance_reason }, ...] }
+// The /api/memories listing returns flat:
+//   { memories: [<Memory>, ...] }
+// Normalize both to a flat MemoryShape[].
+function normalizeMemoryList(data: { results?: unknown[]; memories?: unknown[] }): MemoryShape[] {
+	const items = data.results ?? data.memories ?? [];
+	return items
+		.map((item) => {
+			if (item && typeof item === "object" && "memory" in item) {
+				return (item as { memory?: MemoryShape }).memory;
+			}
+			return item as MemoryShape;
+		})
+		.filter((m): m is MemoryShape => !!m && typeof m === "object");
 }
 
 function summarizeMemory(m: MemoryShape): string {
@@ -104,11 +130,11 @@ export default function piMemoryExtension(pi: ExtensionAPI) {
 		],
 		parameters: SearchParams,
 		async execute(_id, { query, n_results }) {
-			const data = await call<{ results?: MemoryShape[]; memories?: MemoryShape[] }>("/api/search", {
+			const data = await call<{ results?: unknown[]; memories?: unknown[] }>("/api/search", {
 				method: "POST",
 				body: { query, n_results: n_results ?? 8 },
 			});
-			const list = data.results ?? data.memories ?? [];
+			const list = normalizeMemoryList(data);
 			if (list.length === 0) {
 				return { content: [{ type: "text", text: "No matching memories." }], details: { count: 0 } };
 			}
@@ -131,11 +157,11 @@ export default function piMemoryExtension(pi: ExtensionAPI) {
 		],
 		parameters: SearchByTagParams,
 		async execute(_id, { tags, match_all }) {
-			const data = await call<{ results?: MemoryShape[]; memories?: MemoryShape[] }>("/api/search/by-tag", {
+			const data = await call<{ results?: unknown[]; memories?: unknown[] }>("/api/search/by-tag", {
 				method: "POST",
 				body: { tags, match_all: match_all ?? false },
 			});
-			const list = data.results ?? data.memories ?? [];
+			const list = normalizeMemoryList(data);
 			if (list.length === 0) {
 				return { content: [{ type: "text", text: "No memories with those tags." }], details: { count: 0 } };
 			}
@@ -155,10 +181,10 @@ export default function piMemoryExtension(pi: ExtensionAPI) {
 		promptGuidelines: ["Useful at session start to remind yourself what was happening last time."],
 		parameters: RecentParams,
 		async execute(_id, { limit }) {
-			const data = await call<{ memories?: MemoryShape[] }>("/api/memories", {
-				query: { limit: limit ?? 10 },
+			const data = await call<{ memories?: unknown[]; results?: unknown[] }>("/api/memories", {
+				query: { page_size: limit ?? 10 },
 			});
-			const list = data.memories ?? [];
+			const list = normalizeMemoryList(data);
 			if (list.length === 0) {
 				return { content: [{ type: "text", text: "No memories yet." }], details: { count: 0 } };
 			}
