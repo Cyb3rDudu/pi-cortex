@@ -21,9 +21,9 @@ Long-term memory is a property of the *user*, not of the LLM. Every coding sessi
             ┌───────────────────────┼───────────────────────┐
             │                       │                       │
    ┌────────┴────────┐    ┌─────────┴────────┐    ┌─────────┴─────────┐
-   │   pi-memory     │    │  pi-bbcontext    │    │     (future)      │
-   │  on-demand      │    │  auto-inject     │    │     pi-recap      │
-   │  tools          │    │  system prompt   │    │  auto-summary     │
+   │   pi-memory     │    │  pi-bbcontext    │    │     pi-recap      │
+   │  on-demand      │    │  auto-inject     │    │ auto-summary at   │
+   │  tools          │    │  system prompt   │    │ compact/shutdown  │
    └─────────────────┘    └──────────────────┘    └───────────────────┘
             │                       │                       │
             └───────────┬───────────┴───────────┬───────────┘
@@ -37,6 +37,7 @@ Long-term memory is a property of the *user*, not of the LLM. Every coding sessi
 
 - **pi-memory** — registers four tools (`memory_search`, `memory_search_by_tag`, `memory_recent`, `memory_store`) the agent calls on demand.
 - **pi-bbcontext** — auto-fetches relevant memories at startup and injects them into the system prompt on every `before_agent_start` event. No tool calls required by the agent.
+- **pi-recap** — auto-summarizes the current session at `session_before_compact` (save state before context loss) and `session_shutdown` (final snapshot at process exit), then writes the summary back to `mcp-memory-service` with `type:session-recap` and a `parent_id` chain to the previous recap.
 - **future extensions** live as siblings under the repo root.
 
 ## Repo layout
@@ -50,7 +51,10 @@ pi-cortex/
 ├── pi-memory/
 │   ├── package.json     ← name, "pi": { "extensions": ["./index.ts"] }
 │   └── index.ts         ← extension entry point
-└── pi-bbcontext/
+├── pi-bbcontext/
+│   ├── package.json
+│   └── index.ts
+└── pi-recap/
     ├── package.json
     └── index.ts
 ```
@@ -88,18 +92,30 @@ The factory function is awaited by Pi, so async startup work (like fetching init
 
 ### Verified hook events (Pi 0.72)
 
-These names exist in the installed binary; do not invent new ones:
+These names exist in the installed binary; do not invent new ones. Source of truth: `@mariozechner/pi-coding-agent/dist/core/extensions/types.d.ts:593–613`.
 
 ```
-agent_start, agent_end
-before_agent_start, before_provider_request, after_provider_response
-message_start, message_end, message_update
-model_select, branch, before_branch, before_clear, before_compact,
-before_new, before_switch, before_tree, resources_discover,
-input, line, data, end, error, exit, close, context, overflow
+resources_discover
+session_start, session_shutdown
+session_before_switch, session_switch
+session_before_fork,   session_fork
+session_before_compact, session_compact
+session_before_tree,   session_tree
+context
+before_agent_start, agent_start, agent_end
+turn_start, turn_end
+model_select
+tool_call, tool_result
+user_bash
+input
 ```
 
-`before_agent_start` is the only event that can mutate the system prompt — return `{ systemPrompt: <new value> }` from the handler.
+Notes for extension authors:
+
+- `before_agent_start` is the only event that can mutate the system prompt — return `{ systemPrompt: <new value> }` from the handler. Multiple extensions chain.
+- `session_before_compact` fires before context compaction with `{ branchEntries, signal, ... }` — the right place to write a recap before context is lost.
+- `session_shutdown` fires on process exit — use it for one final session-level write. Prefer it over `agent_end` when you want one write per session, not one per agent loop.
+- `context` fires before each LLM call with the full `messages` array; can return `{ messages }` to rewrite history.
 
 ### Tools use TypeBox schemas
 
@@ -119,8 +135,16 @@ Exactly one of each:
 
 | Prefix | Purpose | Examples |
 |---|---|---|
-| `proj:` | Project key — the stable identity of what this memory is about | `proj:github.com/Cyb3rDudu/pi-cortex`<br>`proj:acme.com`<br>`proj:none` for cross-project / global notes |
+| `proj:` | Project key — the stable, machine-derivable identity of what this memory is about (git remote or project marker; see derivation rules below) | `proj:github.com/Cyb3rDudu/pi-cortex`<br>`proj:acme.com`<br>`proj:none` for cross-project / global notes (only set by non-Pi clients — Pi extensions never write `proj:none`) |
 | `type:` | What kind of memory it is (drives ranking and filtering) | see table below |
+
+### Soft-anchor prefix
+
+When a memory has no obvious `proj:` (DeepChat conversations, browser reading sessions, cross-cutting research), use `topic:` as the soft anchor. `topic:` may coexist with `proj:` — they are not mutually exclusive.
+
+| Prefix | When to use | Examples |
+|---|---|---|
+| `topic:` | Soft grouping for non-code work | `topic:llms`, `topic:home-infra`, `topic:bug-bounty`, `topic:research/agentic-patterns` |
 
 ### Memory types (`type:` values)
 
@@ -132,10 +156,14 @@ Exactly one of each:
 | `type:finding` | Confirmed or near-confirmed vulnerabilities / bugs |
 | `type:negative` | What didn't work and why — equally valuable, prevents repeat work |
 | `type:decision` | Architectural / strategic / tactical choices and the rationale |
-| `type:session-recap` | Auto-generated session summaries (written by future `pi-recap`) |
+| `type:session-recap` | Auto-generated session summaries (written by `pi-recap`; chained via `parent_id`) |
 | `type:reference` | Pointers to external systems (URLs, dashboards, ticket IDs) |
 | `type:user` | Stable facts about the user (role, expertise, preferences) |
 | `type:feedback` | Corrections / preferences the user has voiced — apply across future sessions |
+| `type:research` | Facts gathered while reading or exploring a topic. Cross-cutting, often paired with `topic:` |
+| `type:reading` | Notes pulled from a specific source (paper, article, video, web page) |
+| `type:idea` | Generative thought to revisit later |
+| `type:question` | Open question to circle back to |
 | `type:note` | Catch-all when nothing else fits — use sparingly |
 
 ### Optional dimensional tags
@@ -166,7 +194,12 @@ To ensure a project's memories are recallable from any machine, derive the key i
 
 1. If cwd is inside a git repo with a remote: `proj:<host>/<owner>/<repo>` parsed from `git remote get-url origin` (e.g. `proj:github.com/Cyb3rDudu/pi-cortex`).
 2. Else if cwd looks like a project (has `package.json`, `go.mod`, `pyproject.toml`, `Cargo.toml`, `composer.json`, `Gemfile`, or `.git`): `proj:<basename>`.
-3. Else: do not assign a project key. The memory is either `proj:none` (cross-cutting) or should not be auto-injected anywhere.
+3. Else: no project key can be derived.
+
+Behaviour when no key can be derived:
+
+- **Pi extensions (`pi-bbcontext`, `pi-recap`) MUST no-op.** They never write `proj:none`, never auto-inject, and never auto-recap. The user can still call `memory_store` from `pi-memory` by hand if they want a global note.
+- **Other clients (DeepChat, browser plugin) MAY write `proj:none`** for genuinely cross-cutting facts. Those memories surface to Pi only when `PI_BBCONTEXT_INCLUDE_GLOBAL=1`, so they don't pollute project-scoped recall by default.
 
 ### Querying patterns
 
@@ -189,12 +222,17 @@ To ensure a project's memories are recallable from any machine, derive the key i
 
 | Variable | Used by | Default | Purpose |
 |---|---|---|---|
-| `PI_MEMORY_ENDPOINT` | both | `http://127.0.0.1:8000` | Base URL of mcp-memory-service REST API |
-| `PI_MEMORY_API_KEY` | both | — | Bearer token (omit for anonymous) |
-| `PI_BBCONTEXT_TAGS` | bbcontext | — | Comma-separated tags to filter the auto-injection |
-| `PI_BBCONTEXT_MAX` | bbcontext | `8` | Max memories injected |
-| `PI_BBCONTEXT_QUERY` | bbcontext | `{project} recent work decisions findings` | Query template; `{project}`/`{parent}` expand to cwd parts |
+| `PI_MEMORY_ENDPOINT` | all | `http://127.0.0.1:8000` | Base URL of mcp-memory-service REST API |
+| `PI_MEMORY_API_KEY` | all | — | Bearer token (omit for anonymous) |
+| `PI_BBCONTEXT_TAGS` | bbcontext | — | Comma-separated tags to additionally filter every auto-injected bucket (project + globals) |
+| `PI_BBCONTEXT_MAX` | bbcontext | `8` | Total memory budget across all buckets (greedy fill — not per-bucket) |
+| `PI_BBCONTEXT_QUERY` | bbcontext | `{project} recent work decisions findings` | Semantic query template used **only** when tag-based search returns 0 hits. `{project}` / `{parent}` expand to cwd parts |
+| `PI_BBCONTEXT_INCLUDE_GLOBAL` | bbcontext | — | If set to `1`, also pull memories tagged `proj:none` (cross-cutting writes from non-Pi clients) into the injected block |
 | `PI_BBCONTEXT_DISABLE` | bbcontext | — | Any non-empty value disables auto-injection |
+| `PI_RECAP_DISABLE` | recap | — | Any non-empty value disables auto-recap |
+| `PI_RECAP_MIN_MESSAGES` | recap | `4` | Minimum number of message entries in the current branch before a recap is generated (skips empty/trivial sessions) |
+| `PI_RECAP_MAX_CHARS` | recap | `24000` | Maximum chars of transcript to send to the summarizer (older turns are dropped first) |
+| `PI_RECAP_MODEL` | recap | — | Optional `provider/model-id` to use for summarization. If unset, uses the session's currently-selected model |
 
 ## Code style
 
