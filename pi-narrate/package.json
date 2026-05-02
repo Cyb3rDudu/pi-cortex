@@ -1,0 +1,25 @@
+{
+  "name": "pi-extension-narrate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension that injects a short narration-style guideline into every system prompt so the agent gives live, human-readable updates between actions instead of silent tool-call streams.",
+  "license": "MIT",
+  "author": "Cyb3rDudu",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-extension",
+    "pi-coding-agent",
+    "system-prompt",
+    "narration",
+    "verbosity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cyb3rDudu/pi-cortex.git"
+  }
+}
