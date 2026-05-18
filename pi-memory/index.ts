@@ -24,7 +24,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 
 const ENDPOINT = (process.env.PI_MEMORY_ENDPOINT ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const API_KEY = process.env.PI_MEMORY_API_KEY ?? "";
