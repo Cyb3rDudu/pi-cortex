@@ -348,9 +348,9 @@ function parseModelOverride(s: string): ParsedModelRef | null {
 async function pickModel(ctx: ExtensionContext): Promise<{ model: Model<any>; apiKey: string } | null> {
   const tryModel = async (m: Model<any> | undefined): Promise<{ model: Model<any>; apiKey: string } | null> => {
     if (!m) return null;
-    const key = await ctx.modelRegistry.getApiKey(m).catch(() => undefined);
-    if (!key) return null;
-    return { model: m, apiKey: key };
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(m);
+    if (!auth.ok || !auth.apiKey) return null;
+    return { model: m, apiKey: auth.apiKey };
   };
 
   if (MODEL_OVERRIDE) {
